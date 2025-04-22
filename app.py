@@ -132,7 +132,8 @@ def _process_material_in_background(material_id, storage_path):
             doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
 
             # 2. Pass the pymupdf.Document object to pymupdf4llm.to_markdown()
-            md_text = pymupdf4llm.to_markdown(doc)
+            # Add ignore_images and ignore_graphics to potentially bypass extraction errors
+            md_text = pymupdf4llm.to_markdown(doc, ignore_images=True, ignore_graphics=True)
 
             # Basic sanitization (remove null bytes, often problematic)
             md_text = md_text.replace('\x00', '')
