@@ -8,11 +8,18 @@ from dotenv import load_dotenv
 import uuid
 import logging # For better logging
 import urllib.parse # Import for URL encoding and decoding
+import sys # Import sys to access stdout
+import io  # Import io for BytesIO stream
 
 load_dotenv() # Load environment variables from .env file for local dev
 
 # --- Configuration ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Explicitly configure logging to use stdout
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -148,13 +155,12 @@ def process_webhook():
 
         # Step 4: Extract content to Markdown
         logging.info(f"[{material_id}] Step 4: Extracting content to Markdown using pymupdf4llm...")
-        # pymupdf4llm can take bytes directly
         md_text = "" # Initialize md_text
         try:
-            # Consider adding timeout logic here if extraction can hang
-            md_text = pymupdf4llm.to_markdown(file_content_bytes)
+            # Pass the downloaded bytes as a stream
+            pdf_stream = io.BytesIO(file_content_bytes)
+            md_text = pymupdf4llm.to_markdown(stream=pdf_stream)
             # Basic sanitization (remove null bytes, often problematic)
-            # Use replace with null character, not space
             md_text = md_text.replace('\x00', '')
             logging.info(f"[{material_id}] Successfully extracted Markdown. Length: {len(md_text)}")
         # Catch specific RuntimeError related to passwords, if fitz.PasswordError isn't available
