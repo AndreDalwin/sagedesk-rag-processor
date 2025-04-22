@@ -125,33 +125,70 @@ def _process_material_in_background(material_id, storage_path):
         logging.info(f"[{material_id}] Step 4: Extracting content to Markdown using pymupdf4llm...")
         md_text = "" # Initialize md_text
         doc = None   # Initialize doc variable
+        all_pages_md = [] # List to store markdown from each page
         try:
             # 1. Open the PDF bytes as a stream using pymupdf.open()
             pdf_stream = io.BytesIO(file_content_bytes)
             # Explicitly provide filetype hint for stream
             doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
 
-            # 2. Pass the pymupdf.Document object to pymupdf4llm.to_markdown()
-            # Add ignore_images and ignore_graphics to potentially bypass extraction errors
-            md_text = pymupdf4llm.to_markdown(doc, ignore_images=True, ignore_graphics=True)
+            # 2. Iterate through pages and extract markdown individually
+            logging.info(f"[{material_id}] Processing {doc.page_count} pages...")
+            for page_num in range(doc.page_count):
+                page = doc.load_page(page_num) # Load the page
+                logging.info(f"[{material_id}] Attempting extraction for page {page_num + 1}/{doc.page_count}...")
+                try:
+                    # Extract markdown for the current page only
+                    # Pass the doc object but specify the single page number (0-based)
+                    page_md = pymupdf4llm.to_markdown(
+                        doc,
+                        pages=[page_num], # Process only this page
+                        ignore_images=True,
+                        ignore_graphics=True
+                    )
+                    # Basic sanitization (remove null bytes)
+                    sanitized_page_md = page_md.replace('\\x00', '')
+                    if sanitized_page_md.strip(): # Add if not empty
+                        all_pages_md.append(sanitized_page_md)
+                        logging.info(f"[{material_id}] Successfully extracted page {page_num + 1}. Length: {len(sanitized_page_md)}")
+                    else:
+                        logging.info(f"[{material_id}] Page {page_num + 1} resulted in empty markdown after sanitization.")
 
-            # Basic sanitization (remove null bytes, often problematic)
-            md_text = md_text.replace('\x00', '')
-            logging.info(f"[{material_id}] Successfully extracted Markdown. Length: {len(md_text)}")
+                except ValueError as ve:
+                    # Catch the specific error for this page
+                    if "not a textpage of this page" in str(ve):
+                        logging.warning(f"[{material_id}] Skipping page {page_num + 1} due to 'not a textpage' error: {ve}")
+                    else:
+                        # Re-raise other ValueErrors if needed, or log as warning
+                        logging.warning(f"[{material_id}] Skipping page {page_num + 1} due to other ValueError: {ve}")
+                except Exception as page_err:
+                    # Catch other potential errors during single-page processing
+                    logging.warning(f"[{material_id}] Skipping page {page_num + 1} due to unexpected error: {page_err}")
+
+            # 3. Combine markdown from all successful pages
+            md_text = "\\n\\n---\\n\\n".join(all_pages_md) # Join with a separator
+            if not md_text:
+                 logging.warning(f"[{material_id}] Markdown extraction resulted in empty content after processing all pages.")
+                 # Consider if this should be treated as an error or success with no content
+                 # For now, we proceed, but splitting might yield nothing.
+
+            logging.info(f"[{material_id}] Finished page-by-page extraction. Total Markdown Length: {len(md_text)}")
+
         # Catch specific RuntimeError related to passwords, if fitz.PasswordError isn't available
+        # This error would likely occur during pymupdf.open(), before the page loop
         except RuntimeError as e:
             if "password" in str(e).lower():
-                 logging.warning(f"[{material_id}] Caught RuntimeError likely indicating password protection: {e}")
+                 logging.warning(f"[{material_id}] Caught RuntimeError likely indicating password protection during doc open: {e}")
                  raise Exception("PDF file requires a password.") from e
             else:
                  # Re-raise other RuntimeErrors
-                 logging.error(f"[{material_id}] Caught unexpected RuntimeError during Markdown extraction: {e}")
+                 logging.error(f"[{material_id}] Caught unexpected RuntimeError during document open/initial processing: {e}")
                  raise e # Re-raise if it's not the password error
         except Exception as e:
-            # Log the specific error during extraction
-            logging.exception(f"[{material_id}] Failed during Markdown extraction with non-RuntimeError.")
+            # Log the specific error during extraction (likely during open or initial doc processing)
+            logging.exception(f"[{material_id}] Failed during initial document processing or non-page-specific extraction step.")
             # Ensure original exception type/message is preserved if possible
-            raise Exception(f"Failed during Markdown extraction: {type(e).__name__}: {e}") from e
+            raise Exception(f"Failed during document processing step: {type(e).__name__}: {e}") from e
         finally:
             # Ensure the document is closed if it was opened
             if doc:
