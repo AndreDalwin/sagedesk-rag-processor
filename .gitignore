@@ -1,0 +1,20 @@
+# Ignore generated files and secrets
+*.txt
+*.pdf
+*.md
+!README.md
+!requirements.txt
+
+# Environment variables
+.env
+
+# Virtual environment
+venv/
+*/venv/
+.venv/
+*/.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
