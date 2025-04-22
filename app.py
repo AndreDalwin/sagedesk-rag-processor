@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 import uuid
 import traceback # For detailed error logging
 import logging # For better logging
-import urllib.parse # Import for URL encoding
+import urllib.parse # Import for URL encoding and decoding
 
 load_dotenv() # Load environment variables from .env file for local dev
 
@@ -126,25 +126,24 @@ def process_webhook():
         logging.info(f"[{material_id}] Step 2: Got details from webhook: path={storage_path}")
 
         # Step 3: Download file from Storage
-        # Path from DB might contain spaces or other chars needing encoding
+        # Path from DB might contain URL-encoded characters (e.g., %20 for space)
         raw_storage_path = storage_path
-        logging.info(f"[{material_id}] Step 3: Downloading file from storage path: {raw_storage_path}...")
+        logging.info(f"[{material_id}] Step 3: Received storage path: {raw_storage_path}")
+        decoded_storage_path = raw_storage_path # Initialize with raw path as fallback
         try:
-            # URL-encode the path to handle spaces, etc.
-            # We only quote the path part, not the whole URL
-            encoded_storage_path = urllib.parse.quote(raw_storage_path)
-            logging.info(f"[{material_id}] URL-encoded storage path for download: {encoded_storage_path}")
+            # URL-decode the path to handle potential %20, etc.
+            decoded_storage_path = urllib.parse.unquote(raw_storage_path)
+            logging.info(f"[{material_id}] URL-decoded storage path for download: {decoded_storage_path}")
         except Exception as e:
-            logging.warning(f"[{material_id}] URL encoding failed for path: {raw_storage_path}. Error: {e}")
-            # Fallback might be risky if encoding is needed, raise error or try unencoded?
-            # For now, let's proceed with the raw path if encoding fails, but log it.
-            encoded_storage_path = raw_storage_path
+            logging.warning(f"[{material_id}] URL decoding failed for path: {raw_storage_path}. Using raw path. Error: {e}")
+            # Fallback to raw path is handled by initialization above
 
-        # Download to memory using the potentially encoded path
-        file_response = supabase_client.storage.from_('materials').download(encoded_storage_path)
+        # Download to memory using the decoded path
+        logging.info(f"[{material_id}] Attempting download with path: {decoded_storage_path}")
+        file_response = supabase_client.storage.from_('materials').download(decoded_storage_path)
         if not file_response: # Check if download returned bytes
              # Check the actual response status if possible, the exception might be misleading
-             raise Exception(f"Failed to download file from storage (empty response/permissions?). Path tried: {encoded_storage_path}")
+             raise Exception(f"Failed to download file from storage (empty response/permissions?). Path tried: {decoded_storage_path}")
 
         file_content_bytes = file_response
         logging.info(f"[{material_id}] Successfully downloaded file. Size: {len(file_content_bytes)} bytes")
