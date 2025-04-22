@@ -1,14 +1,11 @@
 import os
 import supabase
 import pymupdf4llm
-import pymupdf # Import pymupdf for potential error handling
-import fitz      # Import fitz for PyMuPDF core functionalities and exceptions
 import openai
 from flask import Flask, request, jsonify
 from langchain.text_splitter import MarkdownTextSplitter, RecursiveCharacterTextSplitter
 from dotenv import load_dotenv
 import uuid
-import traceback # For detailed error logging
 import logging # For better logging
 import urllib.parse # Import for URL encoding and decoding
 
@@ -160,12 +157,20 @@ def process_webhook():
             # Use replace with null character, not space
             md_text = md_text.replace('\x00', '')
             logging.info(f"[{material_id}] Successfully extracted Markdown. Length: {len(md_text)}")
-        except fitz.PasswordError:
-             raise Exception("PDF file requires a password.")
+        # Catch specific RuntimeError related to passwords, if fitz.PasswordError isn't available
+        except RuntimeError as e:
+            if "password" in str(e).lower():
+                 logging.warning(f"[{material_id}] Caught RuntimeError likely indicating password protection: {e}")
+                 raise Exception("PDF file requires a password.") from e
+            else:
+                 # Re-raise other RuntimeErrors
+                 logging.error(f"[{material_id}] Caught unexpected RuntimeError during Markdown extraction: {e}")
+                 raise e # Re-raise if it's not the password error
         except Exception as e:
             # Log the specific error during extraction
-            logging.exception(f"[{material_id}] Failed during Markdown extraction.")
-            raise Exception(f"Failed during Markdown extraction: {e}")
+            logging.exception(f"[{material_id}] Failed during Markdown extraction with non-RuntimeError.")
+            # Ensure original exception type/message is preserved if possible
+            raise Exception(f"Failed during Markdown extraction: {type(e).__name__}: {e}") from e
 
 
         # Step 5: Split into Parent and Child Chunks (using Langchain)
