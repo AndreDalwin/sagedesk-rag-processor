@@ -12,6 +12,7 @@ import logging # For better logging
 import urllib.parse # Import for URL encoding and decoding
 import sys # Import sys to access stdout
 import io  # Import io for BytesIO stream
+import threading # Import threading
 
 load_dotenv() # Load environment variables from .env file for local dev
 
@@ -68,59 +69,24 @@ except Exception as e:
 # --- Helper Functions (Chunking) ---
 # Using Langchain splitters below
 
-# --- Webhook Endpoint ---
-@app.route('/process', methods=['POST'])
-def process_webhook():
-    if not supabase_client:
-         logging.error("Webhook request received but Supabase client is not available.")
-         return jsonify({"error": "Server not configured (Supabase client unavailable)"}), 500
-    if not openai_client:
-         logging.error("Webhook request received but OpenAI client is not available.")
-         return jsonify({"error": "Server not configured (Embedding client unavailable)"}), 500
+# --- Background Processing Function ---
+def _process_material_in_background(material_id, storage_path):
+    """Handles the entire RAG processing pipeline for a single material."""
+    # Ensure clients are available (might be redundant if checked before starting thread, but safe)
+    if not supabase_client or not openai_client:
+        logging.error(f"[{material_id}] Background task cannot run: Clients not initialized.")
+        # Attempt to update status to FAILED even if clients weren't fully ready
+        if supabase_client and material_id:
+             try:
+                 supabase_client.table('materials').update({
+                     "status": 'FAILED',
+                     "errorMessage": "Server configuration error (clients unavailable)"
+                 }).eq('id', material_id).execute()
+             except Exception as db_err:
+                 logging.exception(f"[{material_id}] CRITICAL: Failed to update status to FAILED (clients unavailable).")
+        return # Exit the thread
 
-    # 1. Validate Secret
-    incoming_secret = request.headers.get('X-Webhook-Secret')
-    if not WEBHOOK_SECRET:
-        logging.error("Webhook secret not configured on the server.")
-        return jsonify({"error": "Server configuration error"}), 500
-    if incoming_secret != WEBHOOK_SECRET:
-        logging.warning("Unauthorized webhook attempt received.")
-        return jsonify({"error": "Unauthorized"}), 401
-
-    # 2. Parse Payload
-    payload = request.json
-    if not payload:
-        logging.error("Received empty payload.")
-        return jsonify({"error": "Invalid payload"}), 400
-
-    event_type = payload.get('type')
-    record = payload.get('record', {})
-    material_id = record.get('id')
-    status = record.get('status')
-
-    # Determine if we should process
-    should_process = False
-    event_description = ""
-    if event_type == 'INSERT' and material_id:
-        should_process = True
-        event_description = f"INSERT event for Material ID: {material_id}"
-    elif event_type == 'UPDATE' and material_id and status == 'PENDING':
-         should_process = True
-         event_description = f"UPDATE event (Retry) for Material ID: {material_id}"
-
-    if not should_process:
-        logging.info(f"Ignoring event: Type={event_type}, ID={material_id}, Status={status}")
-        return jsonify({"message": "Ignoring event"}), 200
-
-    logging.info(f"Processing: {event_description}")
-
-    storage_path = record.get('storagePath')
-    # file_type = record.get('fileType') # May not be needed if pymupdf4llm handles it
-
-    if not material_id or not storage_path:
-        logging.error(f"Error: Missing materialId or storagePath in payload for event: {event_description}")
-        return jsonify({"error": "Missing materialId or storagePath"}), 400
-
+    logging.info(f"[{material_id}] Background processing thread started.")
     try:
         # --- RAG Processing ---
         logging.info(f"[{material_id}] Step 1: Updating status to PROCESSING...")
@@ -130,7 +96,7 @@ def process_webhook():
 
 
         # Step 2: Get Material details (already have from payload)
-        logging.info(f"[{material_id}] Step 2: Got details from webhook: path={storage_path}")
+        logging.info(f"[{material_id}] Step 2: Details: path={storage_path}") # Simplified log
 
         # Step 3: Download file from Storage
         # Path from DB might contain URL-encoded characters (e.g., %20 for space)
@@ -209,7 +175,9 @@ def process_webhook():
              logging.warning(f"[{material_id}] No parent chunks generated after Markdown splitting. Input length was {len(md_text)}. Setting status to COMPLETED.")
              # Update status to COMPLETED (or maybe FAILED if no content is unexpected)
              supabase_client.table('materials').update({"status": 'COMPLETED', "errorMessage": "No content extracted or chunked"}).eq('id', material_id).execute()
-             return jsonify({"success": True, "materialId": material_id, "message": "No content to process"}), 200
+             # return jsonify({"success": True, "materialId": material_id, "message": "No content to process"}), 200 # Cannot return JSON from thread
+             logging.info(f"[{material_id}] Background thread finished: No content.")
+             return # Exit thread
 
 
         parent_chunk_records_to_insert = []
@@ -366,23 +334,110 @@ def process_webhook():
             logging.info(f"[{material_id}] Successfully updated status to COMPLETED.")
 
 
-        logging.info(f"[{material_id}] Processing finished successfully.")
-        return jsonify({"success": True, "materialId": material_id}), 200
+        logging.info(f"[{material_id}] Background processing thread finished successfully.")
+        # No return value needed from thread
 
     except Exception as e:
         error_message = f"Error processing Material {material_id}: {str(e)}"
-        logging.exception(f"[{material_id}] Processing failed.") # Log detailed traceback
+        logging.exception(f"[{material_id}] Background processing thread failed.") # Log detailed traceback
 
         if material_id and supabase_client:
             try:
-                logging.info(f"[{material_id}] Attempting DB update for FAILED status.")
+                logging.info(f"[{material_id}] Attempting DB update for FAILED status in background thread.")
                 supabase_client.table('materials').update({
                     "status": 'FAILED',
                     "errorMessage": error_message[:1000] # Truncate error
                 }).eq('id', material_id).execute()
-                logging.info(f"[{material_id}] Successfully updated status to FAILED in DB.")
+                logging.info(f"[{material_id}] Successfully updated status to FAILED in DB (from background thread).")
             except Exception as db_err:
-                logging.exception(f"[{material_id}] CRITICAL: Failed to update status to FAILED after processing error.")
+                logging.exception(f"[{material_id}] CRITICAL: Failed to update status to FAILED after processing error in background thread.")
+
+        # No return value needed from thread, error is logged and status updated
+
+# --- Webhook Endpoint ---
+@app.route('/process', methods=['POST'])
+def process_webhook():
+    if not supabase_client:
+         logging.error("Webhook request received but Supabase client is not available.")
+         return jsonify({"error": "Server not configured (Supabase client unavailable)"}), 500
+    if not openai_client:
+         logging.error("Webhook request received but OpenAI client is not available.")
+         return jsonify({"error": "Server not configured (Embedding client unavailable)"}), 500
+
+    # 1. Validate Secret
+    incoming_secret = request.headers.get('X-Webhook-Secret')
+    if not WEBHOOK_SECRET:
+        logging.error("Webhook secret not configured on the server.")
+        return jsonify({"error": "Server configuration error"}), 500
+    if incoming_secret != WEBHOOK_SECRET:
+        logging.warning("Unauthorized webhook attempt received.")
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # 2. Parse Payload
+    payload = request.json
+    if not payload:
+        logging.error("Received empty payload.")
+        return jsonify({"error": "Invalid payload"}), 400
+
+    event_type = payload.get('type')
+    record = payload.get('record', {})
+    material_id = record.get('id')
+    status = record.get('status')
+
+    # Determine if we should process
+    should_process = False
+    event_description = ""
+    if event_type == 'INSERT' and material_id:
+        should_process = True
+        event_description = f"INSERT event for Material ID: {material_id}"
+    elif event_type == 'UPDATE' and material_id and status == 'PENDING':
+         should_process = True
+         event_description = f"UPDATE event (Retry) for Material ID: {material_id}"
+
+    if not should_process:
+        logging.info(f"Ignoring event: Type={event_type}, ID={material_id}, Status={status}")
+        return jsonify({"message": "Ignoring event"}), 200
+
+    logging.info(f"Processing Request Accepted: {event_description}") # Log acceptance
+
+    storage_path = record.get('storagePath')
+    # file_type = record.get('fileType') # May not be needed if pymupdf4llm handles it
+
+    if not material_id or not storage_path:
+        logging.error(f"Error: Missing materialId or storagePath in payload for event: {event_description}")
+        # Don't start a thread if essential info is missing
+        return jsonify({"error": "Missing materialId or storagePath"}), 400
+
+    try:
+        # --- Start Background Processing ---
+        logging.info(f"[{material_id}] Starting background thread for processing...")
+        thread = threading.Thread(
+            target=_process_material_in_background,
+            args=(material_id, storage_path)
+        )
+        thread.daemon = True # Allows main program to exit even if threads are running (optional)
+        thread.start()
+
+        # Return immediately after starting the thread
+        logging.info(f"[{material_id}] Webhook request acknowledged, processing started in background.")
+        return jsonify({"message": "Processing started", "materialId": material_id}), 202 # HTTP 202 Accepted
+
+    except Exception as e:
+        # This catches errors during thread *creation/start*, not errors *within* the thread
+        error_message = f"Error initiating processing for Material {material_id}: {str(e)}"
+        logging.exception(f"[{material_id}] Failed to start background processing thread.")
+
+        # Attempt to update status to FAILED even if thread didn't start properly
+        if material_id and supabase_client:
+            try:
+                logging.info(f"[{material_id}] Attempting DB update for FAILED status (thread start failed).")
+                supabase_client.table('materials').update({
+                    "status": 'FAILED',
+                    "errorMessage": f"Failed to start processing thread: {error_message[:900]}" # Truncate
+                }).eq('id', material_id).execute()
+                logging.info(f"[{material_id}] Successfully updated status to FAILED in DB (thread start failed).")
+            except Exception as db_err:
+                 logging.exception(f"[{material_id}] CRITICAL: Failed to update status to FAILED after thread start error.")
 
         return jsonify({"error": error_message}), 500
 
