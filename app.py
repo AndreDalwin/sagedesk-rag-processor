@@ -2,6 +2,7 @@ import os
 import supabase
 import pymupdf4llm
 import pymupdf # Import pymupdf for potential error handling
+import fitz      # Import fitz for PyMuPDF core functionalities and exceptions
 import openai
 from flask import Flask, request, jsonify
 from langchain.text_splitter import MarkdownTextSplitter, RecursiveCharacterTextSplitter
@@ -159,7 +160,7 @@ def process_webhook():
             # Use replace with null character, not space
             md_text = md_text.replace('\x00', '')
             logging.info(f"[{material_id}] Successfully extracted Markdown. Length: {len(md_text)}")
-        except pymupdf.errors.PasswordError:
+        except fitz.PasswordError:
              raise Exception("PDF file requires a password.")
         except Exception as e:
             # Log the specific error during extraction
