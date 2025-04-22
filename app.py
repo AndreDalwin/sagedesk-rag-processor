@@ -1,6 +1,8 @@
 import os
 import supabase
 import pymupdf4llm
+import pymupdf # Re-import pymupdf as it's needed for pymupdf.open()
+import fitz      # Import fitz for PyMuPDF core functionalities and exceptions
 import openai
 from flask import Flask, request, jsonify
 from langchain.text_splitter import MarkdownTextSplitter, RecursiveCharacterTextSplitter
@@ -156,10 +158,16 @@ def process_webhook():
         # Step 4: Extract content to Markdown
         logging.info(f"[{material_id}] Step 4: Extracting content to Markdown using pymupdf4llm...")
         md_text = "" # Initialize md_text
+        doc = None   # Initialize doc variable
         try:
-            # Pass the downloaded bytes as a stream
+            # 1. Open the PDF bytes as a stream using pymupdf.open()
             pdf_stream = io.BytesIO(file_content_bytes)
-            md_text = pymupdf4llm.to_markdown(stream=pdf_stream)
+            # Explicitly provide filetype hint for stream
+            doc = pymupdf.open(stream=pdf_stream, filetype="pdf")
+
+            # 2. Pass the pymupdf.Document object to pymupdf4llm.to_markdown()
+            md_text = pymupdf4llm.to_markdown(doc)
+
             # Basic sanitization (remove null bytes, often problematic)
             md_text = md_text.replace('\x00', '')
             logging.info(f"[{material_id}] Successfully extracted Markdown. Length: {len(md_text)}")
@@ -177,6 +185,14 @@ def process_webhook():
             logging.exception(f"[{material_id}] Failed during Markdown extraction with non-RuntimeError.")
             # Ensure original exception type/message is preserved if possible
             raise Exception(f"Failed during Markdown extraction: {type(e).__name__}: {e}") from e
+        finally:
+            # Ensure the document is closed if it was opened
+            if doc:
+                try:
+                    doc.close()
+                    logging.info(f"[{material_id}] Closed PyMuPDF document.")
+                except Exception as close_err:
+                    logging.warning(f"[{material_id}] Error closing PyMuPDF document: {close_err}")
 
 
         # Step 5: Split into Parent and Child Chunks (using Langchain)
