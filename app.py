@@ -13,6 +13,7 @@ import urllib.parse # Import for URL encoding and decoding
 import sys # Import sys to access stdout
 import io  # Import io for BytesIO stream
 import threading # Import threading
+from markitdown import MarkItDown # Import markitdown
 
 load_dotenv() # Load environment variables from .env file for local dev
 
