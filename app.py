@@ -13,7 +13,6 @@ import urllib.parse # Import for URL encoding and decoding
 import sys # Import sys to access stdout
 import io  # Import io for BytesIO stream
 import threading # Import threading
-from markitdown import MarkItDown # Import markitdown
 
 load_dotenv() # Load environment variables from .env file for local dev
 
@@ -218,18 +217,30 @@ def _process_material_in_background(material_id, storage_path):
                             logging.warning(f"[{material_id}] Error closing PyMuPDF document: {close_err}")
 
             elif file_extension == ".txt":
-                logging.info(f"[{material_id}] Processing as TXT using markitdown...")
+                logging.info(f"[{material_id}] Processing as TXT by decoding content...")
                 try:
-                    # Use convert_stream for in-memory bytes
-                    # Providing a dummy filename might help internal type detection
-                    result = md_converter.convert_stream(file_stream, filename="input.txt")
-                    md_text = result.text_content.replace('\x00', '') # Basic sanitization
-                    logging.info(f"[{material_id}] Successfully converted TXT using markitdown. Markdown Length: {len(md_text)}")
-                    if not md_text.strip():
-                         logging.warning(f"[{material_id}] Markitdown conversion of TXT resulted in empty or whitespace-only content.")
+                    # Try decoding directly using UTF-8
+                    md_text = file_content_bytes.decode('utf-8')
+                    logging.info(f"[{material_id}] Successfully decoded TXT as UTF-8. Content Length: {len(md_text)}")
+                except UnicodeDecodeError:
+                    logging.warning(f"[{material_id}] Failed to decode TXT as UTF-8. Attempting fallback to latin-1...")
+                    try:
+                        # Fallback to latin-1
+                        md_text = file_content_bytes.decode('latin-1')
+                        logging.info(f"[{material_id}] Successfully decoded TXT using fallback latin-1. Content Length: {len(md_text)}")
+                    except Exception as decode_err_fallback:
+                        # This fallback is less likely to fail, but catch just in case
+                        logging.exception(f"[{material_id}] Failed to decode TXT even with latin-1 fallback.")
+                        raise Exception("Failed to decode TXT content with UTF-8 or latin-1.") from decode_err_fallback
                 except Exception as e:
-                    logging.exception(f"[{material_id}] Failed during markitdown TXT conversion.")
-                    raise Exception(f"Failed during TXT processing with markitdown: {type(e).__name__}: {e}") from e
+                    # Catch other potential errors during decode
+                    logging.exception(f"[{material_id}] Unexpected error during TXT decoding.")
+                    raise Exception(f"Failed during TXT decoding: {type(e).__name__}: {e}") from e
+
+                # Basic sanitization (remove null bytes) - apply after successful decode
+                md_text = md_text.replace('\x00', '')
+                if not md_text.strip():
+                    logging.warning(f"[{material_id}] Decoded TXT content is empty or whitespace-only.")
 
             else:
                 # Handle unsupported file types
