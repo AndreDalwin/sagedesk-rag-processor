@@ -1,13 +1,17 @@
-Flask==3.1.0
-gunicorn
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+gunicorn==21.2.0
 langchain==0.3.23
 langchain-core==0.3.55
 langchain-text-splitters==0.3.8
+celery==5.3.6
+redis==5.0.1
 
 ocrmypdf==16.10.0
 openai==1.75.0
-supabase
+supabase==1.2.0
 PyMuPDF==1.25.5
 pymupdf4llm==0.0.21
 python-dotenv
 markitdown[all]
+pydantic==2.6.0
