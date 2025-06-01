@@ -265,7 +265,7 @@ def process_material_task(self, material_id, storage_path):
             # --- Update Material Status ---
             logging.critical(f"[{material_id}] WORKER COMPLETE: Processing complete, updating material status to COMPLETE")
             self.supabase_client.table('materials').update({
-                "status": 'COMPLETE',
+                "status": 'COMPLETED',
                 "errorMessage": None
             }).eq('id', material_id).execute()
             
