@@ -7,6 +7,7 @@ import tempfile
 import pymupdf4llm
 import pymupdf  # Re-import pymupdf as it's needed for pymupdf.open()
 import fitz      # Import fitz for PyMuPDF core functionalities and exceptions
+import gc
 from markitdown import MarkItDown
 from langchain.text_splitter import MarkdownTextSplitter, RecursiveCharacterTextSplitter
 
@@ -86,6 +87,7 @@ def process_material_task(self, material_id, storage_path):
     success = False
     error_message = ""
     extracted_text = None
+    temp_file_path = None  # Ensure temp_file_path is defined for the finally block
     
     try:
         logging.critical(f"[{material_id}] WORKER PHASE 1: Downloading document from storage: {storage_path}")
@@ -289,7 +291,24 @@ def process_material_task(self, material_id, storage_path):
                 }).eq('id', material_id).execute()
         except Exception as update_err:
             logging.exception(f"[{material_id}] Failed to update material status: {update_err}")
-    
+    finally:
+        # Clean up the temporary file if it was created
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+                logging.info(f"[{material_id}] Temporary file {temp_file_path} deleted.")
+            except Exception as rm_err:
+                logging.error(f"[{material_id}] Error deleting temporary file {temp_file_path}: {rm_err}")
+        
+        # Explicitly delete large variables to hint to GC before calling collect.
+        # extracted_text is initialized to None, so this is safe.
+        if extracted_text is not None:
+            del extracted_text
+            logging.debug(f"[{material_id}] Cleared extracted_text variable reference.")
+
+        gc.collect()
+        logging.info(f"[{material_id}] Explicit garbage collection called at the end of task.")
+        
     return {
         "material_id": material_id,
         "success": success,
