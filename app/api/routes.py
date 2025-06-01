@@ -18,7 +18,7 @@ class WebhookResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
 
-@router.post("/webhook", 
+@router.post("/process", 
              response_model=WebhookResponse, 
              responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
              status_code=status.HTTP_202_ACCEPTED)
