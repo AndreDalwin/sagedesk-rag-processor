@@ -189,9 +189,8 @@ def process_material_task(self, material_id, storage_path):
                 parent_chunk_id = str(uuid.uuid4())
                 parent_record = {
                     "id": parent_chunk_id,
-                    "material_id": material_id,
-                    "content": parent_chunk_content,
-                    "index": i
+                    "materialId": material_id,
+                    "content": parent_chunk_content
                 }
                 all_parent_chunk_records.append(parent_record)
 
@@ -224,11 +223,14 @@ def process_material_task(self, material_id, storage_path):
                         
                         child_record = {
                             "id": str(uuid.uuid4()),
-                            "material_id": material_id,
-                            "parent_chunk_id": parent_chunk_id,
+                            "materialId": material_id,
+                            "parentId": parent_chunk_id,
                             "content": child_text,
                             "embedding": embedding,
-                            "index_in_parent": j
+                            "metadata": {
+                                "parent_chunk_index": i,
+                                "child_chunk_index": j
+                            }
                         }
                         all_child_chunk_records.append(child_record)
                 except Exception as emb_ex:
@@ -238,7 +240,7 @@ def process_material_task(self, material_id, storage_path):
             
             # Store parent chunk records in Supabase
             if all_parent_chunk_records:
-                logging.critical(f"[{material_id}] WORKER PHASE 5A: Storing {len(all_parent_chunk_records)} parent chunk records in Supabase table 'parent_chunks'...")
+                logging.critical(f"[{material_id}] WORKER PHASE 5A: Storing {len(all_parent_chunk_records)} parent chunk records in Supabase table 'ParentChunk'...")
                 batch_size = 50
                 for k_idx in range(0, len(all_parent_chunk_records), batch_size):
                     batch = all_parent_chunk_records[k_idx:k_idx+batch_size]
