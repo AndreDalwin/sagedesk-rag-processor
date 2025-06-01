@@ -16,7 +16,8 @@ from app.core.config import (
     PARENT_CHUNK_OVERLAP, 
     CHILD_CHUNK_SIZE, 
     CHILD_CHUNK_OVERLAP,
-    EMBEDDING_MODEL
+    EMBEDDING_MODEL,
+    CELERY_BROKER_URL
 )
 
 class RAGProcessorTask(Task):

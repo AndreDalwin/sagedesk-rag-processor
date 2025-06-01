@@ -33,7 +33,7 @@ celery_app.conf.update(
 # --- Celery Signal Handlers ---
 @worker_init.connect
 def worker_init_handler(sender, **kwargs):
-    logging.critical(f"WORKER INIT: Celery worker initializing. PID: {sender.pid}")
+    logging.critical(f"WORKER INIT: Celery worker initializing")
     logging.critical(f"WORKER INIT: Connected to broker: {CELERY_BROKER_URL}")
 
 @worker_ready.connect
