@@ -174,13 +174,15 @@ def process_material_task(self, material_id, storage_path):
                 chunk_size=PARENT_CHUNK_SIZE, 
                 chunk_overlap=PARENT_CHUNK_OVERLAP
             )
-            parent_chunks = parent_splitter.split_text(extracted_text)
+            parent_chunks_md = parent_splitter.split_text(extracted_text)
             
             logging.critical(f"[{material_id}] WORKER PHASE 3: Creating semantic chunks with text splitters")
-            logging.info(f"[{material_id}] Created {len(parent_chunks)} parent chunks")
+            logging.info(f"[{material_id}] Created {len(parent_chunks_md)} parent chunks")
             
             # Generate embeddings for all parent chunks
             
+            all_parent_chunk_records = []
+            all_child_chunk_records = []
             logging.critical(f"[{material_id}] WORKER PHASE 4: Processing {len(parent_chunks_md)} parent chunks, generating child chunks and embeddings...")
             # Loop through parent chunks (Markdown)
             for i, parent_chunk_content in enumerate(parent_chunks_md):
