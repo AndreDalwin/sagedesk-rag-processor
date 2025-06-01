@@ -180,25 +180,31 @@ def process_material_task(self, material_id, storage_path):
             logging.info(f"[{material_id}] Created {len(parent_chunks)} parent chunks")
             
             # Generate embeddings for all parent chunks
-            logging.critical(f"[{material_id}] WORKER PHASE 4: Generating embeddings for chunks")
-            all_vectors = []
             
-            # Process each parent chunk to create embeddings and store
-            for i, parent_chunk in enumerate(parent_chunks):
-                logging.info(f"[{material_id}] Processing parent chunk {i+1}/{len(parent_chunks)}")
-                
-                # Further split into smaller chunks for embeddings (child chunks)
+            logging.critical(f"[{material_id}] WORKER PHASE 4: Processing {len(parent_chunks_md)} parent chunks, generating child chunks and embeddings...")
+            # Loop through parent chunks (Markdown)
+            for i, parent_chunk_content in enumerate(parent_chunks_md):
+                parent_chunk_id = str(uuid.uuid4())
+                parent_record = {
+                    "id": parent_chunk_id,
+                    "material_id": material_id,
+                    "content": parent_chunk_content,
+                    "index": i
+                }
+                all_parent_chunk_records.append(parent_record)
+
+                # Split parent chunk into smaller child chunks for embedding
                 child_splitter = RecursiveCharacterTextSplitter(
                     chunk_size=CHILD_CHUNK_SIZE,
                     chunk_overlap=CHILD_CHUNK_OVERLAP
                 )
-                child_chunks_texts = child_splitter.split_text(parent_chunk)
-
+                child_chunks_texts = child_splitter.split_text(parent_chunk_content)
+                
                 if not child_chunks_texts:
-                    logging.info(f"[{material_id}] No child chunks generated for parent chunk {i+1}. Skipping.")
+                    logging.warning(f"[{material_id}] Parent chunk {i+1} (ID: {parent_chunk_id}) resulted in no child chunks after splitting. Skipping.")
                     continue
-
-                logging.info(f"[{material_id}] Generating embeddings for {len(child_chunks_texts)} child chunks in parent chunk {i+1}")
+                
+                logging.info(f"[{material_id}] Parent chunk {i+1} (ID: {parent_chunk_id}) split into {len(child_chunks_texts)} child chunks. Generating embeddings...")
                 
                 try:
                     # Generate embeddings for all child_chunks_texts in this parent_chunk in one batch
@@ -207,46 +213,57 @@ def process_material_task(self, material_id, storage_path):
                         input=child_chunks_texts  # Pass the list of texts
                     )
                     
-                    # embedding_response.data will be a list of embedding objects
                     if len(embedding_response.data) != len(child_chunks_texts):
-                        logging.error(f"[{material_id}] Mismatch in expected ({len(child_chunks_texts)}) and received ({len(embedding_response.data)}) embeddings for parent chunk {i+1}. Skipping this parent chunk.")
-                        continue # Skip this parent chunk if there's a mismatch
+                        logging.error(f"[{material_id}] Mismatch in expected ({len(child_chunks_texts)}) and received ({len(embedding_response.data)}) embeddings for parent chunk {i+1} (ID: {parent_chunk_id}). Skipping child chunks for this parent.")
+                        continue 
 
                     for j, child_text in enumerate(child_chunks_texts):
-                        # Get the corresponding embedding vector
-                        embedding = embedding_response.data[j].embedding # Index by j
+                        embedding = embedding_response.data[j].embedding
                         
-                        # Prepare vector record for Supabase
-                        vector_record = {
+                        child_record = {
                             "id": str(uuid.uuid4()),
                             "material_id": material_id,
+                            "parent_chunk_id": parent_chunk_id,
                             "content": child_text,
                             "embedding": embedding,
-                            "parent_chunk_index": i,
-                            "child_chunk_index": j,
-                            "parent_chunk": parent_chunk if j == 0 else None
+                            "index_in_parent": j
                         }
-                        all_vectors.append(vector_record)
+                        all_child_chunk_records.append(child_record)
                 except Exception as emb_ex:
-                    logging.error(f"[{material_id}] Error generating embeddings for parent chunk {i+1}: {str(emb_ex)}")
-                    # Optionally, decide if you want to skip this parent chunk or re-raise
-                    continue # Skipping this parent chunk on embedding error
+                    logging.error(f"[{material_id}] Error generating embeddings for child chunks of parent chunk {i+1} (ID: {parent_chunk_id}): {str(emb_ex)}")
+                    # Continue to next parent chunk if embeddings fail for current one's children
+                    continue 
             
-            # Store all vector records in Supabase
-            logging.critical(f"[{material_id}] WORKER PHASE 5: Storing {len(all_vectors)} vector records in Supabase...")
-            
-            # Batch insert vectors (in groups of 50 to avoid request size limits)
-            batch_size = 50
-            for i in range(0, len(all_vectors), batch_size):
-                batch = all_vectors[i:i+batch_size]
-                self.supabase_client.table('material_embeddings').insert(batch).execute()
+            # Store parent chunk records in Supabase
+            if all_parent_chunk_records:
+                logging.critical(f"[{material_id}] WORKER PHASE 5A: Storing {len(all_parent_chunk_records)} parent chunk records in Supabase table 'parent_chunks'...")
+                batch_size = 50
+                for k_idx in range(0, len(all_parent_chunk_records), batch_size):
+                    batch = all_parent_chunk_records[k_idx:k_idx+batch_size]
+                    try:
+                        self.supabase_client.table('ParentChunk').insert(batch).execute()
+                    except Exception as db_ex:
+                        logging.error(f"[{material_id}] Error inserting batch of parent chunks: {str(db_ex)}")
+                        raise # Re-raising to fail the task if DB insert fails critically
+
+            # Store child chunk records (with embeddings) in Supabase
+            if all_child_chunk_records:
+                logging.critical(f"[{material_id}] WORKER PHASE 5B: Storing {len(all_child_chunk_records)} child chunk (embedding) records in Supabase table 'chunks'...")
+                batch_size = 50
+                for k_idx in range(0, len(all_child_chunk_records), batch_size):
+                    batch = all_child_chunk_records[k_idx:k_idx+batch_size]
+                    try:
+                        self.supabase_client.table('chunks').insert(batch).execute()
+                    except Exception as db_ex:
+                        logging.error(f"[{material_id}] Error inserting batch of child chunks: {str(db_ex)}")
+                        raise # Re-raising
             
             # --- Update Material Status ---
             logging.critical(f"[{material_id}] WORKER COMPLETE: Processing complete, updating material status to COMPLETE")
             self.supabase_client.table('materials').update({
                 "status": 'COMPLETE',
                 "errorMessage": None,
-                "totalChunks": len(all_vectors)
+                "totalChunks": len(all_child_chunk_records)
             }).eq('id', material_id).execute()
             
             success = True
