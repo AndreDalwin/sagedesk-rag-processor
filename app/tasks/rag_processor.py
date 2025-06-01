@@ -46,9 +46,20 @@ def process_material_task(self, material_id, storage_path):
     4. Generate embeddings
     5. Store in the database
     """
+    logging.critical(f"[{material_id}] WORKER START: Beginning task execution on worker node")
+    logging.critical(f"[{material_id}] Broker URL: {CELERY_BROKER_URL}")
+    logging.critical(f"[{material_id}] Storage path to process: {storage_path}")
     logging.info(f"[{material_id}] Starting material processing in Celery task...")
     
     # Ensure clients are available
+    logging.critical(f"[{material_id}] Initializing clients...")
+    try:
+        supabase = self.supabase_client
+        openai = self.openai_client
+        logging.critical(f"[{material_id}] Clients initialized successfully: Supabase={bool(supabase)}, OpenAI={bool(openai)}")
+    except Exception as client_err:
+        logging.critical(f"[{material_id}] ERROR initializing clients: {str(client_err)}")
+        
     if not self.supabase_client or not self.openai_client:
         error_msg = "Task cannot run: Clients not initialized."
         logging.error(f"[{material_id}] {error_msg}")
@@ -74,9 +85,10 @@ def process_material_task(self, material_id, storage_path):
     extracted_text = None
     
     try:
-        logging.info(f"[{material_id}] Downloading document from storage: {storage_path}")
+        logging.critical(f"[{material_id}] WORKER PHASE 1: Downloading document from storage: {storage_path}")
         
         # --- First update status to PROCESSING ---
+        logging.critical(f"[{material_id}] Updating status to PROCESSING in Supabase...")
         self.supabase_client.table('materials').update({
             "status": 'PROCESSING',
             "errorMessage": None
@@ -100,7 +112,7 @@ def process_material_task(self, material_id, storage_path):
         file_data = io.BytesIO(response)
         
         # Convert document to markdown using pymupdf4llm
-        logging.info(f"[{material_id}] Converting document to markdown...")
+        logging.critical(f"[{material_id}] WORKER PHASE 2: Converting document to markdown...")
         
         try:
             # First try pymupdf4llm which handles PDF, DOCX, etc. and produces nice Markdown
@@ -140,9 +152,11 @@ def process_material_task(self, material_id, storage_path):
             )
             parent_chunks = parent_splitter.split_text(extracted_text)
             
+            logging.critical(f"[{material_id}] WORKER PHASE 3: Creating semantic chunks with text splitters")
             logging.info(f"[{material_id}] Created {len(parent_chunks)} parent chunks")
             
             # Generate embeddings for all parent chunks
+            logging.critical(f"[{material_id}] WORKER PHASE 4: Generating embeddings for chunks")
             all_vectors = []
             
             # Process each parent chunk to create embeddings and store
@@ -180,7 +194,7 @@ def process_material_task(self, material_id, storage_path):
                     all_vectors.append(vector_record)
             
             # Store all vector records in Supabase
-            logging.info(f"[{material_id}] Storing {len(all_vectors)} vector records in Supabase...")
+            logging.critical(f"[{material_id}] WORKER PHASE 5: Storing {len(all_vectors)} vector records in Supabase...")
             
             # Batch insert vectors (in groups of 50 to avoid request size limits)
             batch_size = 50
@@ -189,7 +203,7 @@ def process_material_task(self, material_id, storage_path):
                 self.supabase_client.table('material_embeddings').insert(batch).execute()
             
             # --- Update Material Status ---
-            logging.info(f"[{material_id}] Processing complete, updating material status to COMPLETE")
+            logging.critical(f"[{material_id}] WORKER COMPLETE: Processing complete, updating material status to COMPLETE")
             self.supabase_client.table('materials').update({
                 "status": 'COMPLETE',
                 "errorMessage": None,
@@ -204,6 +218,7 @@ def process_material_task(self, material_id, storage_path):
             
     except Exception as e:
         error_message = f"Error processing material: {str(e)}"
+        logging.critical(f"[{material_id}] WORKER ERROR: {error_message}")
         logging.exception(f"[{material_id}] {error_message}")
         
         # Update material status to FAILED
