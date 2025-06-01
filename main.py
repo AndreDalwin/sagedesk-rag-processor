@@ -37,7 +37,7 @@ async def startup_event():
     logging.info("FastAPI application started successfully")
 
 # Register routers
-app.include_router(api_router, prefix="/api")
+app.include_router(api_router)
 
 # Global exception handler
 @app.exception_handler(Exception)
