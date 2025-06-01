@@ -28,7 +28,7 @@ async def process_webhook(request: Request):
     Validates the webhook secret and starts a background Celery task to process the document.
     """
     # Verify Webhook Secret (if configured)
-    secret_header = request.headers.get("webhook-secret")
+    secret_header = request.headers.get("X-Webhook-Secret")
     if WEBHOOK_SECRET and secret_header != WEBHOOK_SECRET:
         logging.warning(f"Invalid webhook secret received: {secret_header}")
         raise HTTPException(status_code=401, detail="Invalid webhook secret")
