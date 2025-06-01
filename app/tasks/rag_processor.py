@@ -2,6 +2,8 @@ import logging
 import uuid
 import urllib.parse
 import io
+import os
+import tempfile
 import pymupdf4llm
 import pymupdf  # Re-import pymupdf as it's needed for pymupdf.open()
 import fitz      # Import fitz for PyMuPDF core functionalities and exceptions
@@ -110,37 +112,58 @@ def process_material_task(self, material_id, storage_path):
             raise Exception(f"Failed to download file from Supabase Storage: {file_path}")
         
         # --- Process Document ---
-        file_data = io.BytesIO(response)
-        
-        # Convert document to markdown using pymupdf4llm
-        logging.critical(f"[{material_id}] WORKER PHASE 2: Converting document to markdown...")
-        
+        temp_file_path = None # Initialize for the finally block
         try:
-            # First try pymupdf4llm which handles PDF, DOCX, etc. and produces nice Markdown
-            extracted_text = pymupdf4llm.to_markdown(file_data)
-            logging.info(f"[{material_id}] Successfully converted document using pymupdf4llm")
-        except Exception as convert_err:
-            logging.exception(f"[{material_id}] Failed to convert with pymupdf4llm, falling back to PyMuPDF: {convert_err}")
+            # Create a temporary file to store the downloaded content
+            # Using a suffix like .pdf can help libraries identify the file type, though pymupdf4llm is often robust.
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                temp_file.write(response) # response contains bytes from Supabase download
+                temp_file_path = temp_file.name
+            logging.info(f"[{material_id}] Document downloaded to temporary file: {temp_file_path}")
+
+            # Convert document to markdown using pymupdf4llm
+            logging.critical(f"[{material_id}] WORKER PHASE 2: Converting document to markdown...")
             
             try:
-                # Fallback to basic PyMuPDF for PDFs only
-                file_data.seek(0)  # Reset position in file for re-reading
-                pdf_document = fitz.open(stream=file_data, filetype="pdf")
-                text_parts = []
+                # First try pymupdf4llm which handles PDF, DOCX, etc. and produces nice Markdown
+                # Pass the path to the temporary file
+                extracted_text = pymupdf4llm.to_markdown(temp_file_path)
+                logging.info(f"[{material_id}] Successfully converted document using pymupdf4llm")
+            except Exception as convert_err:
+                logging.exception(f"[{material_id}] Failed to convert with pymupdf4llm, falling back to PyMuPDF: {convert_err}")
                 
-                for page_num in range(len(pdf_document)):
-                    page = pdf_document.load_page(page_num)
-                    text_parts.append(page.get_text())
-                
-                extracted_text = "\n".join(text_parts)
-                pdf_document.close()
-                logging.info(f"[{material_id}] Successfully converted document using PyMuPDF fallback")
-                
-                # Convert plain text to Markdown using MarkItDown
-                logging.info(f"[{material_id}] Converting plain text to markdown with MarkItDown...")
-                extracted_text = converter.convert(extracted_text)
-            except Exception as fallback_err:
-                raise Exception(f"Failed to extract text with both pymupdf4llm and PyMuPDF: {fallback_err}")
+                try:
+                    # Fallback to basic PyMuPDF for PDFs only
+                    # Pass the path to the temporary file; fitz.open() can take a filepath directly
+                    pdf_document = fitz.open(temp_file_path) 
+                    text_parts = []
+                    
+                    for page_num in range(len(pdf_document)):
+                        page = pdf_document.load_page(page_num)
+                        text_parts.append(page.get_text())
+                    
+                    extracted_text = "\n".join(text_parts)
+                    pdf_document.close()
+                    logging.info(f"[{material_id}] Successfully converted document using PyMuPDF fallback")
+                    
+                    # Convert plain text to Markdown using MarkItDown
+                    logging.info(f"[{material_id}] Converting plain text to markdown with MarkItDown...")
+                    extracted_text = converter.convert(extracted_text)
+                except Exception as fallback_err:
+                    detailed_error_msg = (
+                        f"Failed to extract text with both pymupdf4llm and PyMuPDF. "
+                        f"PyMuPDF fallback error: {fallback_err}. "
+                        f"Original pymupdf4llm error: {convert_err}."
+                    )
+                    logging.error(f"[{material_id}] {detailed_error_msg}")
+                    raise Exception(detailed_error_msg)
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                    logging.info(f"[{material_id}] Successfully deleted temporary file: {temp_file_path}")
+                except Exception as e_remove:
+                    logging.error(f"[{material_id}] Error deleting temporary file {temp_file_path}: {e_remove}")
         
         # --- Process and Store Chunks ---
         if extracted_text:
