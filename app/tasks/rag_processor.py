@@ -192,30 +192,45 @@ def process_material_task(self, material_id, storage_path):
                     chunk_size=CHILD_CHUNK_SIZE,
                     chunk_overlap=CHILD_CHUNK_OVERLAP
                 )
-                child_chunks = child_splitter.split_text(parent_chunk)
+                child_chunks_texts = child_splitter.split_text(parent_chunk)
+
+                if not child_chunks_texts:
+                    logging.info(f"[{material_id}] No child chunks generated for parent chunk {i+1}. Skipping.")
+                    continue
+
+                logging.info(f"[{material_id}] Generating embeddings for {len(child_chunks_texts)} child chunks in parent chunk {i+1}")
                 
-                for j, child_text in enumerate(child_chunks):
-                    # Generate embedding
+                try:
+                    # Generate embeddings for all child_chunks_texts in this parent_chunk in one batch
                     embedding_response = self.openai_client.embeddings.create(
                         model=EMBEDDING_MODEL,
-                        input=child_text
+                        input=child_chunks_texts  # Pass the list of texts
                     )
                     
-                    # Get the embedding vector
-                    embedding = embedding_response.data[0].embedding
-                    
-                    # Prepare vector record for Supabase
-                    vector_record = {
-                        "id": str(uuid.uuid4()),
-                        "material_id": material_id,
-                        "content": child_text,
-                        "embedding": embedding,
-                        "parent_chunk_index": i,
-                        "child_chunk_index": j,
-                        "parent_chunk": parent_chunk if j == 0 else None  # Only store parent content on first child
-                    }
-                    
-                    all_vectors.append(vector_record)
+                    # embedding_response.data will be a list of embedding objects
+                    if len(embedding_response.data) != len(child_chunks_texts):
+                        logging.error(f"[{material_id}] Mismatch in expected ({len(child_chunks_texts)}) and received ({len(embedding_response.data)}) embeddings for parent chunk {i+1}. Skipping this parent chunk.")
+                        continue # Skip this parent chunk if there's a mismatch
+
+                    for j, child_text in enumerate(child_chunks_texts):
+                        # Get the corresponding embedding vector
+                        embedding = embedding_response.data[j].embedding # Index by j
+                        
+                        # Prepare vector record for Supabase
+                        vector_record = {
+                            "id": str(uuid.uuid4()),
+                            "material_id": material_id,
+                            "content": child_text,
+                            "embedding": embedding,
+                            "parent_chunk_index": i,
+                            "child_chunk_index": j,
+                            "parent_chunk": parent_chunk if j == 0 else None
+                        }
+                        all_vectors.append(vector_record)
+                except Exception as emb_ex:
+                    logging.error(f"[{material_id}] Error generating embeddings for parent chunk {i+1}: {str(emb_ex)}")
+                    # Optionally, decide if you want to skip this parent chunk or re-raise
+                    continue # Skipping this parent chunk on embedding error
             
             # Store all vector records in Supabase
             logging.critical(f"[{material_id}] WORKER PHASE 5: Storing {len(all_vectors)} vector records in Supabase...")
